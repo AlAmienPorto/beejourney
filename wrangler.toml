@@ -1,0 +1,7 @@
+name = "bee-journey-events"
+main = "dist/server/index.js"
+compatibility_date = "2026-05-15"
+
+# Folder public / statis (otomatis hasil build Next.js/Vinext)
+[assets]
+directory = "dist/client"
