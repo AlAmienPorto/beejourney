@@ -1,38 +1,30 @@
-import { eq } from "drizzle-orm";
-import { getDb } from "@/db";
-import { participants } from "@/db/schema";
 import { requireAdminApi } from "@/lib/admin-auth";
 import { getSupabase } from "@/lib/supabase";
+import { supabaseError } from "@/lib/supabase-data";
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
   const auth = await requireAdminApi();
   if (auth.response) return auth.response;
   try {
     const { id } = await context.params;
-    const db = getDb();
-    const [participant] = await db
-      .select({
-        paymentKey: participants.paymentKey,
-        paymentName: participants.paymentName,
-        paymentType: participants.paymentType,
-      })
-      .from(participants)
-      .where(eq(participants.id, id))
-      .limit(1);
-    if (!participant) return new Response("Bukti transfer tidak ditemukan", { status: 404 });
-
     const supabase = getSupabase();
-    const { data, error } = await supabase.storage.from("payments").download(participant.paymentKey);
-    
-    if (error || !data) {
-      console.error("Supabase Storage Error:", error);
-      return new Response("Bukti transfer tidak ditemukan", { status: 404 });
-    }
+    const participant = await supabase
+      .from("participants")
+      .select("payment_key,payment_name")
+      .eq("id", id)
+      .maybeSingle();
+    if (participant.error) throw supabaseError("Gagal mencari bukti transfer", participant.error);
+    if (!participant.data) return new Response("Bukti transfer tidak ditemukan", { status: 404 });
 
-    return new Response(data, {
+    const signed = await supabase.storage
+      .from("payments")
+      .createSignedUrl(participant.data.payment_key, 5 * 60, { download: false });
+    if (signed.error || !signed.data) return new Response("Bukti transfer tidak ditemukan", { status: 404 });
+
+    return new Response(null, {
+      status: 307,
       headers: {
-        "Content-Type": participant.paymentType,
-        "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(participant.paymentName)}`,
+        Location: signed.data.signedUrl,
         "Cache-Control": "private, no-store",
       },
     });

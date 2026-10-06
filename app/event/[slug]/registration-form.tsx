@@ -59,6 +59,7 @@ function FieldLabel({ children }: { children: React.ReactNode }) {
 export function RegistrationForm({ event }: { event: PublicEvent }) {
   const [fileName, setFileName] = useState("");
   const [saving, setSaving] = useState(false);
+  const [savingLabel, setSavingLabel] = useState("Mengirim…");
   const [registrationId, setRegistrationId] = useState<string | null>(null);
   const [registeredName, setRegisteredName] = useState("");
 
@@ -71,11 +72,57 @@ export function RegistrationForm({ event }: { event: PublicEvent }) {
     submitEvent.preventDefault();
     const form = submitEvent.currentTarget;
     const formData = new FormData(form);
+    const paymentProof = formData.get("paymentProof");
+    if (!(paymentProof instanceof File) || paymentProof.size === 0) {
+      toast.error("Pilih bukti transfer terlebih dahulu.");
+      return;
+    }
+    if (!["image/jpeg", "image/png", "image/webp", "application/pdf"].includes(paymentProof.type) || paymentProof.size > 5 * 1024 * 1024) {
+      toast.error("Bukti transfer harus berupa JPG, PNG, WEBP, atau PDF maksimal 5 MB.");
+      return;
+    }
     setSaving(true);
     try {
+      setSavingLabel("Menyiapkan upload…");
+      const prepareResponse = await fetch(`/api/public/events/${encodeURIComponent(event.slug)}/register/upload`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fileName: paymentProof.name,
+          fileType: paymentProof.type,
+          fileSize: paymentProof.size,
+        }),
+      });
+      const prepared = (await prepareResponse.json()) as {
+        upload?: { signedUrl: string; uploadTicket: string };
+        error?: string;
+      };
+      if (!prepareResponse.ok || !prepared.upload) {
+        throw new Error(prepared.error || "Upload bukti transfer belum dapat disiapkan.");
+      }
+
+      setSavingLabel("Mengunggah bukti…");
+      const uploadBody = new FormData();
+      uploadBody.append("cacheControl", "3600");
+      uploadBody.append("", paymentProof);
+      const uploadResponse = await fetch(prepared.upload.signedUrl, {
+        method: "PUT",
+        headers: { "x-upsert": "false" },
+        body: uploadBody,
+      });
+      if (!uploadResponse.ok) throw new Error("Bukti transfer gagal diunggah. Silakan coba lagi.");
+
+      setSavingLabel("Menyimpan pendaftaran…");
       const response = await fetch(`/api/public/events/${encodeURIComponent(event.slug)}/register`, {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: formData.get("name"),
+          phone: formData.get("phone"),
+          socialMedia: formData.get("socialMedia"),
+          address: formData.get("address"),
+          uploadTicket: prepared.upload.uploadTicket,
+        }),
       });
       const data = (await response.json()) as { registrationId?: string; error?: string };
       if (!response.ok || !data.registrationId) {
@@ -89,6 +136,7 @@ export function RegistrationForm({ event }: { event: PublicEvent }) {
       toast.error(error instanceof Error ? error.message : "Pendaftaran belum berhasil dikirim.");
     } finally {
       setSaving(false);
+      setSavingLabel("Mengirim…");
     }
   }
 
@@ -198,7 +246,7 @@ export function RegistrationForm({ event }: { event: PublicEvent }) {
               <div className="flex flex-col gap-4 border-t border-slate-100 pt-6 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-xs leading-5 text-slate-500">Data hanya digunakan untuk pengelolaan event ini.</p>
                 <Button size="lg" disabled={saving} className="h-12 rounded-xl bg-[#3153d4] px-7 hover:bg-[#263fad]">
-                  {saving ? "Mengirim…" : "Kirim pendaftaran"}
+                  {saving ? savingLabel : "Kirim pendaftaran"}
                 </Button>
               </div>
             </form>

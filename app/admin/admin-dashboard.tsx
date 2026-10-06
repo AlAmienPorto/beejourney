@@ -72,6 +72,7 @@ type Participant = {
   status: "pending" | "verified";
   createdAt: string;
   paymentName: string;
+  paymentType: string;
   paymentUrl: string;
 };
 
@@ -254,7 +255,9 @@ export function AdminDashboard({
       });
       const data = (await response.json()) as { participant?: Participant; error?: string };
       if (!response.ok || !data.participant) throw new Error(data.error || "Status belum berhasil diperbarui.");
-      setParticipants((current) => current.map((participant) => participant.id === participantId ? data.participant! : participant));
+      setParticipants((current) => current.map((participant) => participant.id === participantId
+        ? { ...data.participant!, paymentUrl: participant.paymentUrl }
+        : participant));
       toast.success("Status pembayaran diperbarui");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Status belum berhasil diperbarui.");

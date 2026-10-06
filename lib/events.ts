@@ -1,6 +1,5 @@
-import { eq, isNull } from "drizzle-orm";
-import { getDb } from "@/db";
-import { events } from "@/db/schema";
+import { getSupabase } from "@/lib/supabase";
+import { supabaseError } from "@/lib/supabase-data";
 
 export function createEventSlug(name: string, id: string) {
   const base = name
@@ -13,16 +12,14 @@ export function createEventSlug(name: string, id: string) {
   return `${base}-${id.slice(0, 8)}`;
 }
 
-export async function backfillEventSlugs() {
-  const db = getDb();
-  const rows = await db
-    .select({ id: events.id, name: events.name })
-    .from(events)
-    .where(isNull(events.slug));
-  for (const row of rows) {
-    await db
-      .update(events)
-      .set({ slug: createEventSlug(row.name, row.id) })
-      .where(eq(events.id, row.id));
-  }
+export async function backfillEventSlugs(rows: Array<{ id: string; name: string }>) {
+  const supabase = getSupabase();
+  await Promise.all(rows.map(async (row) => {
+    const { error } = await supabase
+      .from("events")
+      .update({ slug: createEventSlug(row.name, row.id) })
+      .eq("id", row.id)
+      .is("slug", null);
+    if (error) throw supabaseError("Gagal melengkapi slug event", error);
+  }));
 }

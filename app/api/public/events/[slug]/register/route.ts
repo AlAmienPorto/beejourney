@@ -1,75 +1,86 @@
-import { and, eq } from "drizzle-orm";
-import { getDb } from "@/db";
-import { events, participants } from "@/db/schema";
 import { getSupabase } from "@/lib/supabase";
+import { isUniqueViolation, supabaseError } from "@/lib/supabase-data";
+import { verifyUploadTicket } from "@/lib/upload-ticket";
 
 const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp", "application/pdf"]);
+const noStoreHeaders = { "Cache-Control": "no-store" };
 
 export async function POST(request: Request, context: { params: Promise<{ slug: string }> }) {
-  let uploadedKey: string | null = null;
   try {
     const { slug } = await context.params;
-    const db = getDb();
-    const [event] = await db
-      .select({ id: events.id })
-      .from(events)
-      .where(and(eq(events.slug, slug), eq(events.active, true)))
-      .limit(1);
-    if (!event) return Response.json({ error: "Event tidak ditemukan atau pendaftaran sudah ditutup." }, { status: 404 });
+    const payload = (await request.json()) as Record<string, unknown>;
+    const name = String(payload.name ?? "").trim();
+    const phone = String(payload.phone ?? "").replace(/\D+/g, "");
+    const socialMedia = String(payload.socialMedia ?? "").trim();
+    const address = String(payload.address ?? "").trim();
+    const ticket = await verifyUploadTicket(payload.uploadTicket);
 
-    const form = await request.formData();
-    const name = String(form.get("name") ?? "").trim();
-    const phone = String(form.get("phone") ?? "").replace(/\D+/g, "");
-    const socialMedia = String(form.get("socialMedia") ?? "").trim();
-    const address = String(form.get("address") ?? "").trim();
-    const file = form.get("paymentProof");
-
-    if (!name || phone.length < 9 || !socialMedia || !address || !(file instanceof File)) {
-      return Response.json({ error: "Semua data wajib diisi dengan benar." }, { status: 400 });
+    if (!name || phone.length < 9 || !socialMedia || !address || !ticket) {
+      return Response.json({ error: "Semua data wajib diisi dengan benar." }, { status: 400, headers: noStoreHeaders });
     }
-    if (!allowedTypes.has(file.type) || file.size === 0 || file.size > 5 * 1024 * 1024) {
-      return Response.json({ error: "Bukti transfer harus berupa JPG, PNG, WEBP, atau PDF maksimal 5 MB." }, { status: 400 });
+    if (!allowedTypes.has(ticket.fileType) || ticket.fileSize < 1 || ticket.fileSize > 5 * 1024 * 1024) {
+      return Response.json({ error: "Data bukti transfer tidak valid." }, { status: 400, headers: noStoreHeaders });
     }
-
-    const id = crypto.randomUUID();
-    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "-").slice(-100) || "bukti-transfer";
-    uploadedKey = `payments/${event.id}/${id}-${safeName}`;
     const supabase = getSupabase();
-    const { error: uploadError } = await supabase.storage.from("payments").upload(uploadedKey, file, {
-      contentType: file.type,
-      upsert: true,
-    });
-    
-    if (uploadError) {
-      throw new Error(`Upload error: ${uploadError.message}`);
+    const [eventResult, fileResult, existingResult] = await Promise.all([
+      supabase.from("events").select("id").eq("slug", slug).eq("active", true).maybeSingle(),
+      supabase.storage.from("payments").info(ticket.path),
+      supabase.from("participants").select("payment_key").eq("id", ticket.id).maybeSingle(),
+    ]);
+    if (existingResult.error) throw supabaseError("Gagal memeriksa pendaftaran", existingResult.error);
+    if (existingResult.data?.payment_key === ticket.path) {
+      return Response.json({ registrationId: ticket.id }, { headers: noStoreHeaders });
+    }
+    if (eventResult.error) throw supabaseError("Gagal memeriksa event", eventResult.error);
+    if (!eventResult.data || eventResult.data.id !== ticket.eventId) {
+      await supabase.storage.from("payments").remove([ticket.path]);
+      return Response.json({ error: "Event tidak ditemukan atau pendaftaran sudah ditutup." }, { status: 404, headers: noStoreHeaders });
+    }
+    if (
+      fileResult.error
+      || !fileResult.data
+      || fileResult.data.size !== ticket.fileSize
+      || fileResult.data.contentType !== ticket.fileType
+    ) {
+      await supabase.storage.from("payments").remove([ticket.path]).catch(() => undefined);
+      return Response.json({ error: "Upload bukti transfer belum selesai atau tidak valid." }, { status: 400, headers: noStoreHeaders });
     }
 
-    await db.insert(participants).values({
-      id,
-      eventId: event.id,
+    const inserted = await supabase.from("participants").insert({
+      id: ticket.id,
+      event_id: eventResult.data.id,
       name,
       phone,
-      socialMedia,
+      social_media: socialMedia,
       address,
-      paymentKey: uploadedKey,
-      paymentName: file.name,
-      paymentType: file.type,
-      paymentSize: file.size,
+      payment_key: ticket.path,
+      payment_name: ticket.fileName,
+      payment_type: ticket.fileType,
+      payment_size: ticket.fileSize,
       status: "pending",
-      createdAt: new Date(),
+      created_at: new Date().toISOString(),
     });
-
-    return Response.json({ registrationId: id }, { status: 201 });
-  } catch (error) {
-    if (uploadedKey) {
-      const supabase = getSupabase();
-      await supabase.storage.from("payments").remove([uploadedKey]).catch(() => undefined);
+    if (inserted.error) {
+      if (inserted.error.code === "23505") {
+        const replay = await supabase
+          .from("participants")
+          .select("payment_key")
+          .eq("id", ticket.id)
+          .maybeSingle();
+        if (!replay.error && replay.data?.payment_key === ticket.path) {
+          return Response.json({ registrationId: ticket.id }, { headers: noStoreHeaders });
+        }
+      }
+      await supabase.storage.from("payments").remove([ticket.path]).catch(() => undefined);
+      throw supabaseError("Gagal menyimpan pendaftaran", inserted.error);
     }
-    const message = error instanceof Error ? error.message : "";
-    if (message.includes("UNIQUE constraint failed") || message.includes("duplicate key value")) {
-      return Response.json({ error: "Nomor HP ini sudah terdaftar pada event ini." }, { status: 409 });
+
+    return Response.json({ registrationId: ticket.id }, { status: 201, headers: noStoreHeaders });
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      return Response.json({ error: "Nomor HP ini sudah terdaftar pada event ini." }, { status: 409, headers: noStoreHeaders });
     }
     console.error("Failed to create public registration", error);
-    return Response.json({ error: "Pendaftaran belum berhasil dikirim. Silakan coba lagi." }, { status: 500 });
+    return Response.json({ error: "Pendaftaran belum berhasil dikirim. Silakan coba lagi." }, { status: 500, headers: noStoreHeaders });
   }
 }
