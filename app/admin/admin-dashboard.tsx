@@ -111,7 +111,7 @@ function normalizeWhatsApp(phone: string) {
 }
 
 function whatsappLink(participant: Participant, event: EventItem) {
-  const message = `Halo ${participant.name}, kami dari BeeJourney Event Organizer ingin menindaklanjuti pendaftaran Anda untuk event ${event.name}.`;
+  const message = `jangan lupa join grup ya sayang \nhttps://chat.whatsapp.com/DYhTWzcaOj4GQV1ZRqCsXj`;
   return `https://wa.me/${normalizeWhatsApp(participant.phone)}?text=${encodeURIComponent(message)}`;
 }
 
