@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Copy,
   CreditCard,
+  Download,
   ExternalLink,
   Link2,
   LogOut,
@@ -15,6 +16,7 @@ import {
   Plus,
   Search,
   UploadCloud,
+  UserCheck,
   Users,
 } from "lucide-react";
 import { toast, Toaster } from "sonner";
@@ -70,6 +72,7 @@ type Participant = {
   socialMedia: string;
   address: string;
   status: "pending" | "verified";
+  attended: boolean;
   createdAt: string;
   paymentName: string;
   paymentType: string;
@@ -110,6 +113,21 @@ function normalizeWhatsApp(phone: string) {
 function whatsappLink(participant: Participant, event: EventItem) {
   const message = `Halo ${participant.name}, kami dari BeeJourney Event Organizer ingin menindaklanjuti pendaftaran Anda untuk event ${event.name}.`;
   return `https://wa.me/${normalizeWhatsApp(participant.phone)}?text=${encodeURIComponent(message)}`;
+}
+
+function csvCell(value: string | number) {
+  let text = String(value);
+  if (/^[=+\-@]/.test(text)) text = `'${text}`;
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function csvFileName(value: string) {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "event";
 }
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
@@ -245,25 +263,73 @@ export function AdminDashboard({
     }
   }
 
-  async function updatePaymentStatus(participantId: string, status: "pending" | "verified") {
+  function exportParticipantsCsv() {
+    if (!selectedEvent || participants.length === 0) return;
+    const headers = [
+      "No",
+      "Nama",
+      "No. HP / WhatsApp",
+      "Social Media",
+      "Alamat",
+      "Status Pembayaran",
+      "Kehadiran",
+      "Nama File Bukti",
+      "Waktu Daftar",
+    ];
+    const rows = participants.map((participant, index) => [
+      index + 1,
+      participant.name,
+      participant.phone,
+      participant.socialMedia,
+      participant.address,
+      participant.status === "verified" ? "Terverifikasi" : "Menunggu",
+      participant.attended ? "Hadir" : "Belum hadir",
+      participant.paymentName,
+      new Date(participant.createdAt).toLocaleString("id-ID"),
+    ]);
+    const csv = [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
+    const url = URL.createObjectURL(new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `peserta-${csvFileName(selectedEvent.name)}-${selectedEvent.eventDate}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    toast.success("Data peserta berhasil diekspor");
+  }
+
+  async function updateParticipant(
+    participantId: string,
+    updates: Partial<Pick<Participant, "status" | "attended">>,
+    successMessage: string,
+  ) {
     setUpdatingParticipantId(participantId);
     try {
       const response = await fetch(`/api/admin/participants/${participantId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify(updates),
       });
       const data = (await response.json()) as { participant?: Participant; error?: string };
-      if (!response.ok || !data.participant) throw new Error(data.error || "Status belum berhasil diperbarui.");
+      if (!response.ok || !data.participant) throw new Error(data.error || "Data peserta belum berhasil diperbarui.");
       setParticipants((current) => current.map((participant) => participant.id === participantId
         ? { ...data.participant!, paymentUrl: participant.paymentUrl }
         : participant));
-      toast.success("Status pembayaran diperbarui");
+      toast.success(successMessage);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Status belum berhasil diperbarui.");
+      toast.error(error instanceof Error ? error.message : "Data peserta belum berhasil diperbarui.");
     } finally {
       setUpdatingParticipantId(null);
     }
+  }
+
+  async function updatePaymentStatus(participantId: string, status: "pending" | "verified") {
+    await updateParticipant(participantId, { status }, "Status pembayaran diperbarui");
+  }
+
+  async function updateAttendance(participantId: string, attended: boolean) {
+    await updateParticipant(participantId, { attended }, attended ? "Peserta ditandai hadir" : "Kehadiran peserta dibatalkan");
   }
 
   return (
@@ -330,10 +396,11 @@ export function AdminDashboard({
           </section>
         )}
 
-        <div className="mt-6 grid gap-4 sm:grid-cols-3">
+        <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <div className="stat-card"><div><span>Total peserta</span><strong>{participants.length}</strong></div><span className="stat-icon bg-blue-50 text-blue-600"><Users /></span></div>
           <div className="stat-card"><div><span>Terverifikasi</span><strong>{participants.filter((item) => item.status === "verified").length}</strong></div><span className="stat-icon bg-emerald-50 text-emerald-600"><CheckCircle2 /></span></div>
           <div className="stat-card"><div><span>Menunggu</span><strong>{participants.filter((item) => item.status === "pending").length}</strong></div><span className="stat-icon bg-orange-50 text-orange-600"><CreditCard /></span></div>
+          <div className="stat-card"><div><span>Hadir</span><strong>{participants.filter((item) => item.attended).length}</strong></div><span className="stat-icon bg-violet-50 text-violet-600"><UserCheck /></span></div>
         </div>
 
         <section className="mt-6 overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_16px_45px_rgba(40,56,95,.06)]">
@@ -345,9 +412,14 @@ export function AdminDashboard({
                 <p className="mt-1 truncate font-bold">{selectedEvent?.name ?? "Pilih event"}</p>
               </div>
             </div>
-            <div className="relative w-full md:w-72">
-              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-              <Input value={search} onChange={(event) => setSearch(event.target.value)} className="h-11 rounded-xl bg-slate-50 pl-10" placeholder="Cari nama atau nomor HP" />
+            <div className="flex w-full flex-col gap-2 sm:flex-row md:w-auto">
+              <Button variant="outline" className="h-11 rounded-xl" disabled={participants.length === 0} onClick={exportParticipantsCsv}>
+                <Download /> Export CSV
+              </Button>
+              <div className="relative w-full md:w-72">
+                <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+                <Input value={search} onChange={(event) => setSearch(event.target.value)} className="h-11 rounded-xl bg-slate-50 pl-10" placeholder="Cari nama atau nomor HP" />
+              </div>
             </div>
           </div>
 
@@ -358,6 +430,7 @@ export function AdminDashboard({
                 <TableHead className="text-xs text-slate-500">Kontak</TableHead>
                 <TableHead className="text-xs text-slate-500">Bukti transfer</TableHead>
                 <TableHead className="text-xs text-slate-500">Status</TableHead>
+                <TableHead className="text-xs text-slate-500">Kehadiran</TableHead>
                 <TableHead className="pr-5 text-right text-xs text-slate-500">Aksi</TableHead>
               </TableRow>
             </TableHeader>
@@ -390,6 +463,18 @@ export function AdminDashboard({
                       </SelectContent>
                     </Select>
                   </TableCell>
+                  <TableCell>
+                    <Button
+                      variant={participant.attended ? "default" : "outline"}
+                      size="sm"
+                      aria-pressed={participant.attended}
+                      disabled={updatingParticipantId === participant.id}
+                      onClick={() => void updateAttendance(participant.id, !participant.attended)}
+                      className={participant.attended ? "bg-emerald-600 hover:bg-emerald-700" : ""}
+                    >
+                      <UserCheck /> {participant.attended ? "Sudah hadir" : "Tandai hadir"}
+                    </Button>
+                  </TableCell>
                   <TableCell className="pr-5 text-right">
                     {selectedEvent && (
                       <Button size="sm" asChild className="bg-[#168447] hover:bg-[#116b39]">
@@ -400,7 +485,7 @@ export function AdminDashboard({
                 </TableRow>
               ))}
               {filteredParticipants.length === 0 && (
-                <TableRow><TableCell colSpan={5} className="h-40 text-center text-slate-500">{loadingParticipants ? "Memuat peserta…" : "Belum ada peserta untuk event ini."}</TableCell></TableRow>
+                <TableRow><TableCell colSpan={6} className="h-40 text-center text-slate-500">{loadingParticipants ? "Memuat peserta…" : "Belum ada peserta untuk event ini."}</TableCell></TableRow>
               )}
             </TableBody>
           </Table>

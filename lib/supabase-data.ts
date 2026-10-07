@@ -26,11 +26,12 @@ type ParticipantRow = {
   payment_type: string;
   payment_size: number;
   status: "pending" | "verified";
+  attended: boolean;
   created_at: string;
 };
 
 export const EVENT_COLUMNS = "id,slug,name,event_date,location,quota,fee,bank_name,bank_account_number,bank_account_name,confirmation_whatsapp,active,created_at";
-export const PARTICIPANT_COLUMNS = "id,event_id,name,phone,social_media,address,payment_key,payment_name,payment_type,payment_size,status,created_at";
+export const PARTICIPANT_COLUMNS = "id,event_id,name,phone,social_media,address,payment_key,payment_name,payment_type,payment_size,status,attended,created_at";
 
 export function mapEvent(row: EventRow) {
   return {
@@ -63,6 +64,7 @@ export function mapParticipant(row: ParticipantRow) {
     paymentType: row.payment_type,
     paymentSize: row.payment_size,
     status: row.status,
+    attended: row.attended,
     createdAt: row.created_at,
   };
 }

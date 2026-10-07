@@ -37,6 +37,7 @@ export const participants = pgTable(
     paymentType: text("payment_type").notNull(),
     paymentSize: integer("payment_size").notNull(),
     status: text("status", { enum: ["pending", "verified"] }).notNull().default("pending"),
+    attended: boolean("attended").notNull().default(false),
     createdAt: timestamp("created_at").notNull(),
   },
   (table) => [
