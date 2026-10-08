@@ -14,6 +14,7 @@ import {
   MessageCircle,
   Pencil,
   Plus,
+  RefreshCw,
   Search,
   UploadCloud,
   UserCheck,
@@ -190,7 +191,9 @@ export function AdminDashboard({
   async function loadParticipants(eventId: string) {
     setLoadingParticipants(true);
     try {
-      const response = await fetch(`/api/admin/participants?eventId=${encodeURIComponent(eventId)}`);
+      const response = await fetch(`/api/admin/participants?eventId=${encodeURIComponent(eventId)}`, {
+        cache: "no-store",
+      });
       const data = (await response.json()) as { participants?: Participant[]; error?: string };
       if (!response.ok) throw new Error(data.error || "Peserta belum dapat dimuat.");
       setParticipants(data.participants ?? []);
@@ -413,6 +416,16 @@ export function AdminDashboard({
               </div>
             </div>
             <div className="flex w-full flex-col gap-2 sm:flex-row md:w-auto">
+              <Button
+                variant="outline"
+                className="h-11 rounded-xl"
+                disabled={!selectedEventId || loadingParticipants}
+                onClick={() => void loadParticipants(selectedEventId)}
+                aria-label="Muat ulang data peserta"
+              >
+                <RefreshCw className={loadingParticipants ? "animate-spin" : undefined} />
+                {loadingParticipants ? "Memuat..." : "Reload"}
+              </Button>
               <Button variant="outline" className="h-11 rounded-xl" disabled={participants.length === 0} onClick={exportParticipantsCsv}>
                 <Download /> Export CSV
               </Button>
